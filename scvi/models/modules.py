@@ -315,6 +315,7 @@ class LinearDecoderSCVI(nn.Module):
         raw_px_scale = self.factor_regressor(z, *cat_list)
         px_scale = torch.log_softmax(raw_px_scale, dim=-1)
         px_dropout = self.px_dropout_decoder(z, *cat_list)
+        library = torch.clamp(library, max=12)
         px_rate = library + px_scale
         px_r = None
 
@@ -496,7 +497,7 @@ class MultiDecoder(nn.Module):
 
         px_scale = self.px_scale_decoder(px)
         px_dropout = self.px_dropout_decoder(px)
-        px_rate = torch.log(library) + px_scale
+        px_rate = torch.exp(library) * px_scale
         px_r = self.px_r_decoder(px) if dispersion == "gene-cell" else None
 
         return px_scale, px_r, px_rate, px_dropout
