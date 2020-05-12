@@ -21,4 +21,3 @@ class TestBiomDataset(TestCase):
                r'data/AG/AG_100nt.biom?raw=true')
         dataset = BiomDataset(filename='AG_100nt.biom', url=url, save_path="tests/data")
         unsupervised_nb_training_one_epoch(dataset)
-
