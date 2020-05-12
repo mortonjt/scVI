@@ -75,7 +75,7 @@ class BiomDataset(DownloadableDataset):
         logger.info("Preprocessing dataset")
 
         table = load_table(os.path.join(self.save_path, self.filenames[0]))
-        gene_names = table.ids(axis='sample')
+        gene_names = table.ids(axis='observation')
 
         labels, cell_types, batch_indices = None, None, None
         if self.labels_file is not None:
@@ -94,11 +94,10 @@ class BiomDataset(DownloadableDataset):
         logger.info("Finished preprocessing dataset")
 
         self.populate_from_data(
-            X=table.matrix_data,
+            X=table.matrix_data.T,
             batch_indices=batch_indices,
             labels=labels,
             gene_names=gene_names,
             cell_types=cell_types,
         )
         self.filter_cells_by_count()
-
