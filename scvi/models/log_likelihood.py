@@ -5,6 +5,7 @@ import torch
 import torch.nn.functional as F
 from torch import logsumexp
 from torch.distributions import Normal, Beta
+from scvi.models.utils import logexpsum
 
 
 def compute_elbo(vae, posterior, **kwargs):
@@ -261,22 +262,13 @@ def log_nb_positive(x, log_mu, log_theta, eps=1e-8):
             1, log_theta.size(0)
         )  # In this case, we reshape theta for broadcasting
 
-    # log_theta_mu_eps = torch.log(theta + mu + eps)
-    #
-    # res = (
-    #     theta * (torch.log(theta + eps) - log_theta_mu_eps)
-    #     + x * (torch.log(mu + eps) - log_theta_mu_eps)
-    #     + torch.lgamma(x + theta)
-    #     - torch.lgamma(theta)
-    #     - torch.lgamma(x + 1)
-    # )
-    # TODO: I wonder if we can fix this theta parameter
     theta = torch.exp(log_theta)
-    res = (theta * log_theta + x * log_mu
-           + torch.lgamma(x + theta)
-           + torch.lgamma(x + theta)
-           - torch.lgamma(theta)
-    )
+    log_denom = logexpsum(log_theta, log_mu)
+    res = x * (log_mu - log_denom) + \
+        theta * (log_theta - log_denom) + \
+        torch.lgamma(x + theta) - \
+        torch.lgamma(theta) - \
+        torch.lgamma(x + 1)
     return res
 
 

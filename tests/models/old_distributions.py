@@ -15,8 +15,74 @@ from torch.distributions.utils import (
     logits_to_probs,
 )
 
-from scvi.models.log_likelihood import log_nb_positive, log_zinb_positive
 
+def log_zinb_positive(x, mu, theta, pi, eps=1e-8):
+    """
+    Note: All inputs are torch Tensors
+    log likelihood (scalar) of a minibatch according to a zinb model.
+    Notes:
+    We parametrize the bernoulli using the logits, hence the softplus functions appearing
+    Variables:
+    mu: mean of the negative binomial (has to be positive support) (shape: minibatch x genes)
+    theta: inverse dispersion parameter (has to be positive support) (shape: minibatch x genes)
+    pi: logit of the dropout parameter (real support) (shape: minibatch x genes)
+    eps: numerical stability constant
+    """
+
+    # theta is the dispersion rate. If .ndimension() == 1, it is shared for all cells (regardless of batch or labels)
+    if theta.ndimension() == 1:
+        theta = theta.view(
+            1, theta.size(0)
+        )  # In this case, we reshape theta for broadcasting
+
+    softplus_pi = F.softplus(-pi)  #  uses log(sigmoid(x)) = -softplus(-x)
+    log_theta_eps = torch.log(theta + eps)
+    log_theta_mu_eps = torch.log(theta + mu + eps)
+    pi_theta_log = -pi + theta * (log_theta_eps - log_theta_mu_eps)
+
+    case_zero = F.softplus(pi_theta_log) - softplus_pi
+    mul_case_zero = torch.mul((x < eps).type(torch.float32), case_zero)
+
+    case_non_zero = (
+        -softplus_pi
+        + pi_theta_log
+        + x * (torch.log(mu + eps) - log_theta_mu_eps)
+        + torch.lgamma(x + theta)
+        - torch.lgamma(theta)
+        - torch.lgamma(x + 1)
+    )
+    mul_case_non_zero = torch.mul((x > eps).type(torch.float32), case_non_zero)
+
+    res = mul_case_zero + mul_case_non_zero
+
+    return res
+
+
+def log_nb_positive(x, mu, theta, eps=1e-8):
+    """
+    Note: All inputs should be torch Tensors
+    log likelihood (scalar) of a minibatch according to a nb model.
+    Variables:
+    mu: mean of the negative binomial (has to be positive support) (shape: minibatch x genes)
+    theta: inverse dispersion parameter (has to be positive support) (shape: minibatch x genes)
+    eps: numerical stability constant
+    """
+    if theta.ndimension() == 1:
+        theta = theta.view(
+            1, theta.size(0)
+        )  # In this case, we reshape theta for broadcasting
+
+    log_theta_mu_eps = torch.log(theta + mu + eps)
+
+    res = (
+        theta * (torch.log(theta + eps) - log_theta_mu_eps)
+        + x * (torch.log(mu + eps) - log_theta_mu_eps)
+        + torch.lgamma(x + theta)
+        - torch.lgamma(theta)
+        - torch.lgamma(x + 1)
+    )
+
+    return res
 
 def _convert_mean_disp_to_counts_logits(mu, theta, eps=1e-6):
     r"""NB parameterizations conversion
@@ -43,8 +109,8 @@ def _convert_counts_logits_to_mean_disp(total_count, logits):
         :return: the mean and inverse overdispersion of the NB distribution.
     """
     theta = total_count
-    log_mu = logits + torch.log(theta)
-    return log_mu, theta
+    mu = logits.exp() * theta
+    return mu, theta
 
 
 class NegativeBinomial(Distribution):
@@ -60,8 +126,8 @@ class NegativeBinomial(Distribution):
     one parameterization to another.
     """
     arg_constraints = {
-        "log_mu": constraints.real,
-        "log_theta": constraints.real,
+        "mu": constraints.greater_than_eq(0),
+        "theta": constraints.greater_than_eq(0),
     }
     support = constraints.nonnegative_integer
 
@@ -70,12 +136,12 @@ class NegativeBinomial(Distribution):
         total_count: torch.Tensor = None,
         probs: torch.Tensor = None,
         logits: torch.Tensor = None,
-        log_mu: torch.Tensor = None,
-        log_theta: torch.Tensor = None,
+        mu: torch.Tensor = None,
+        theta: torch.Tensor = None,
         validate_args=True,
     ):
         self._eps = 1e-8
-        if (log_mu is None) == (total_count is None):
+        if (mu is None) == (total_count is None):
             raise ValueError(
                 "Please use one of the two possible parameterizations. Refer to the documentation for more information."
             )
@@ -87,11 +153,11 @@ class NegativeBinomial(Distribution):
             logits = logits if logits is not None else probs_to_logits(probs)
             total_count = total_count.type_as(logits)
             total_count, logits = broadcast_all(total_count, logits)
-            log_mu, log_theta = _convert_counts_logits_to_mean_disp(total_count, logits)
+            mu, theta = _convert_counts_logits_to_mean_disp(total_count, logits)
         else:
-            log_mu, log_theta = broadcast_all(log_mu, log_theta)
-        self.log_mu = log_mu
-        self.log_theta = log_theta
+            mu, theta = broadcast_all(mu, theta)
+        self.mu = mu
+        self.theta = theta
         super().__init__(validate_args=validate_args)
 
     def sample(self, sample_shape=torch.Size()):
@@ -115,12 +181,11 @@ class NegativeBinomial(Distribution):
                     "The value argument must be within the support of the distribution",
                     UserWarning,
                 )
-        return log_nb_positive(value, log_mu=self.log_mu,
-                               log_theta=self.log_theta, eps=self._eps)
+        return log_nb_positive(value, mu=self.mu, theta=self.theta, eps=self._eps)
 
     def _gamma(self):
-        concentration = torch.exp(self.log_theta)
-        rate = torch.exp(self.log_theta - self.log_mu)
+        concentration = self.theta
+        rate = self.theta / self.mu
         # Important remark: Gamma is parametrized by the rate = 1/scale!
         gamma_d = Gamma(concentration=concentration, rate=rate)
         return gamma_d
